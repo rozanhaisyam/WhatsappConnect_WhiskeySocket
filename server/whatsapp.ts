@@ -4,6 +4,8 @@ import QRCode from "qrcode";
 import fs from "fs";
 
 const STATE_FILE = "auth_info.json";
+const QR_TIMEOUT = 30000; // 30 seconds before QR code expires
+const QR_REGENERATION_DELAY = 5000; // 5 seconds delay before generating new QR
 
 export class WhatsAppManager {
   private sock: any = null;
@@ -11,7 +13,9 @@ export class WhatsAppManager {
   private isConnected = false;
   private qrAttemptCount = 0;
   private readonly maxQrAttempts = 5;
-  
+  private qrTimer: NodeJS.Timeout | null = null;
+  private canGenerateQR = true;
+
   constructor(private storage: IStorage) {}
 
   private loadState() {
@@ -25,9 +29,50 @@ export class WhatsAppManager {
     fs.writeFileSync(STATE_FILE, JSON.stringify(state, BufferJSON.replacer, 2));
   }
 
+  private clearQRTimer() {
+    if (this.qrTimer) {
+      clearTimeout(this.qrTimer);
+      this.qrTimer = null;
+    }
+  }
+
+  private async handleQRGeneration(qr: string) {
+    if (!this.canGenerateQR) return;
+
+    this.qrAttemptCount++;
+    console.log(`New QR Code generated (${this.qrAttemptCount}/${this.maxQrAttempts})`);
+
+    try {
+      this.qrCode = await QRCode.toDataURL(qr);
+
+      // Set timer to clear QR code after timeout
+      this.clearQRTimer();
+      this.qrTimer = setTimeout(() => {
+        console.log("QR Code expired");
+        this.qrCode = null;
+
+        // Set delay before allowing new QR generation
+        this.canGenerateQR = false;
+        setTimeout(() => {
+          this.canGenerateQR = true;
+        }, QR_REGENERATION_DELAY);
+
+      }, QR_TIMEOUT);
+
+    } catch (err) {
+      console.error("Error generating QR code:", err);
+    }
+
+    if (this.qrAttemptCount >= this.maxQrAttempts) {
+      console.log("Max QR attempts reached");
+      await this.disconnect();
+      this.qrCode = null;
+    }
+  }
+
   async connect() {
     const state = this.loadState();
-    
+
     this.sock = makeWASocket({
       auth: state,
       printQRInTerminal: true,
@@ -37,15 +82,7 @@ export class WhatsAppManager {
       const { connection, qr } = update;
 
       if (qr) {
-        this.qrAttemptCount++;
-        console.log(`New QR Code generated (${this.qrAttemptCount}/${this.maxQrAttempts})`);
-        this.qrCode = await QRCode.toDataURL(qr);
-
-        if (this.qrAttemptCount >= this.maxQrAttempts) {
-          console.log("Max QR attempts reached");
-          await this.disconnect();
-          this.qrCode = null;
-        }
+        await this.handleQRGeneration(qr);
       }
 
       if (connection === "open") {
@@ -53,12 +90,14 @@ export class WhatsAppManager {
         this.isConnected = true;
         this.qrAttemptCount = 0;
         this.qrCode = null;
+        this.clearQRTimer();
         await this.storage.updateSessionStatus(true);
       }
 
       if (connection === "close") {
         console.log("Disconnected from WhatsApp");
         this.isConnected = false;
+        this.clearQRTimer();
         await this.storage.updateSessionStatus(false);
       }
     });
@@ -71,6 +110,7 @@ export class WhatsAppManager {
       this.sock.ws.close();
       this.sock = null;
       this.isConnected = false;
+      this.clearQRTimer();
       await this.storage.updateSessionStatus(false);
     }
   }
@@ -81,7 +121,7 @@ export class WhatsAppManager {
     }
 
     const formattedNumber = `${to}@s.whatsapp.net`;
-    
+
     try {
       await this.sock.sendMessage(formattedNumber, { text: content });
       return true;
