@@ -4,8 +4,7 @@ import QRCode from "qrcode";
 import fs from "fs";
 
 const STATE_FILE = "auth_info.json";
-const QR_TIMEOUT = 30000; // 30 seconds before QR code expires
-const QR_REGENERATION_DELAY = 5000; // 5 seconds delay before generating new QR
+const QR_TIMEOUT = 5000; // 5 seconds before QR code expires
 
 export class WhatsAppManager {
   private sock: any = null;
@@ -14,7 +13,6 @@ export class WhatsAppManager {
   private qrAttemptCount = 0;
   private readonly maxQrAttempts = 5;
   private qrTimer: NodeJS.Timeout | null = null;
-  private canGenerateQR = true;
 
   constructor(private storage: IStorage) {}
 
@@ -37,26 +35,18 @@ export class WhatsAppManager {
   }
 
   private async handleQRGeneration(qr: string) {
-    if (!this.canGenerateQR) return;
-
     this.qrAttemptCount++;
     console.log(`New QR Code generated (${this.qrAttemptCount}/${this.maxQrAttempts})`);
 
     try {
       this.qrCode = await QRCode.toDataURL(qr);
 
-      // Set timer to clear QR code after timeout
+      // Set timer to clear QR code after 5 seconds
       this.clearQRTimer();
       this.qrTimer = setTimeout(() => {
         console.log("QR Code expired");
         this.qrCode = null;
-
-        // Set delay before allowing new QR generation
-        this.canGenerateQR = false;
-        setTimeout(() => {
-          this.canGenerateQR = true;
-        }, QR_REGENERATION_DELAY);
-
+        // No delay for next QR code generation
       }, QR_TIMEOUT);
 
     } catch (err) {
